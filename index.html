@@ -4,7 +4,11 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
 <title>書庫 · BookShelf</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/quagga/0.12.1/quagga.min.js"></script>
+<script type="module">
+  import { BrowserMultiFormatReader, NotFoundException } from 'https://esm.sh/@zxing/browser@0.1.5';
+  import { BarcodeFormat, DecodeHintType } from 'https://esm.sh/@zxing/library@0.21.3';
+  window._ZXing = { BrowserMultiFormatReader, NotFoundException, BarcodeFormat, DecodeHintType };
+</script>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,700;1,400&family=Noto+Serif+TC:wght@300;400;600&display=swap');
 
@@ -377,7 +381,7 @@
         <span class="icon">📷</span>
         <div style="font-size:0.82rem">點擊下方按鈕開啟相機</div>
       </div>
-      <div id="scanner-container" style="display:none"></div>
+      <video id="zxing-video" style="display:none;width:100%;height:100%;object-fit:cover;border-radius:12px;" playsinline muted></video>
       <div class="scan-overlay" id="scan-overlay" style="display:none">
         <div class="scan-frame"><div class="scan-line"></div></div>
       </div>
@@ -546,48 +550,62 @@ async function apiPost(body) {
 }
 
 // ── Scanner ───────────────────────────────────────────────
-function startScanner() {
+let zxingReader = null;
+
+async function startScanner() {
+  // 等 ZXing 載入
+  if (!window._ZXing) {
+    setStatus('error', '掃描器載入中，請稍後再試');
+    return;
+  }
+  const { BrowserMultiFormatReader } = window._ZXing;
+
   document.getElementById('scanner-placeholder').style.display = 'none';
-  document.getElementById('scanner-container').style.display = 'block';
+  document.getElementById('zxing-video').style.display = 'block';
   document.getElementById('scan-overlay').style.display = 'flex';
   document.getElementById('btn-start-scan').style.display = 'none';
   document.getElementById('btn-stop-scan').style.display = 'block';
   scannerRunning = true;
 
-  Quagga.init({
-    inputStream: {
-      type: 'LiveStream',
-      target: document.getElementById('scanner-container'),
-      constraints: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } },
-    },
-    decoder: { readers: ['ean_reader', 'ean_8_reader', 'code_128_reader'] },
-    locate: true,
-  }, err => {
-    if (err) {
-      setStatus('error', '無法開啟相機：' + err.message);
-      stopScanner(); return;
-    }
-    Quagga.start();
-  });
+  try {
+    zxingReader = new BrowserMultiFormatReader();
+    const video = document.getElementById('zxing-video');
 
-  let lastCode = '', lastTime = 0;
-  Quagga.onDetected(result => {
-    const code = result.codeResult.code;
-    const now = Date.now();
-    if (code === lastCode && now - lastTime < 3000) return;
-    lastCode = code; lastTime = now;
-    if (navigator.vibrate) navigator.vibrate(100);
+    // 取得後鏡頭
+    const devices = await BrowserMultiFormatReader.listVideoInputDevices();
+    const backCamera = devices.find(d =>
+      d.label.toLowerCase().includes('back') ||
+      d.label.toLowerCase().includes('rear') ||
+      d.label.toLowerCase().includes('環境') ||
+      d.label.toLowerCase().includes('後')
+    ) || devices[devices.length - 1];
+
+    const deviceId = backCamera ? backCamera.deviceId : undefined;
+
+    let lastCode = '', lastTime = 0;
+    await zxingReader.decodeFromVideoDevice(deviceId, video, (result, err) => {
+      if (result) {
+        const code = result.getText();
+        const now = Date.now();
+        if (code === lastCode && now - lastTime < 3000) return;
+        lastCode = code; lastTime = now;
+        if (navigator.vibrate) navigator.vibrate([50, 30, 50]);
+        stopScanner();
+        lookupISBN(code);
+      }
+    });
+  } catch(e) {
+    setStatus('error', '無法開啟相機：' + e.message);
     stopScanner();
-    lookupISBN(code);
-  });
+  }
 }
 
 function stopScanner() {
   if (!scannerRunning) return;
-  try { Quagga.stop(); } catch(e) {}
+  try { if (zxingReader) { zxingReader.reset(); zxingReader = null; } } catch(e) {}
   scannerRunning = false;
   document.getElementById('scanner-placeholder').style.display = 'block';
-  document.getElementById('scanner-container').style.display = 'none';
+  document.getElementById('zxing-video').style.display = 'none';
   document.getElementById('scan-overlay').style.display = 'none';
   document.getElementById('btn-start-scan').style.display = 'block';
   document.getElementById('btn-stop-scan').style.display = 'none';
