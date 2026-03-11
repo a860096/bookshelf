@@ -4,12 +4,16 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
 <title>書庫 · BookShelf</title>
-<script type="module">
-  import { BrowserMultiFormatReader, NotFoundException } from 'https://esm.sh/@zxing/browser@0.1.5';
-  window._ZXing = { BrowserMultiFormatReader, NotFoundException };
-  window._ZXingReady = true;
-  // 通知按鈕可以啟用
-  document.dispatchEvent(new Event('zxing-ready'));
+<script src="https://unpkg.com/@zxing/library@0.21.3/umd/index.min.js"></script>
+<script>
+  // ZXing UMD 版載入後掛到 window
+  window.addEventListener('load', function() {
+    if (window.ZXing) {
+      window._ZXing = { BrowserMultiFormatReader: ZXing.BrowserMultiFormatReader };
+      window._ZXingReady = true;
+      document.dispatchEvent(new Event('zxing-ready'));
+    }
+  });
 </script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
