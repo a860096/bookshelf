@@ -4,17 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
 <title>書庫 · BookShelf</title>
-<script src="https://unpkg.com/@zxing/library@0.21.3/umd/index.min.js"></script>
-<script>
-  // ZXing UMD 版載入後掛到 window
-  window.addEventListener('load', function() {
-    if (window.ZXing) {
-      window._ZXing = { BrowserMultiFormatReader: ZXing.BrowserMultiFormatReader };
-      window._ZXingReady = true;
-      document.dispatchEvent(new Event('zxing-ready'));
-    }
-  });
-</script>
+<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <script>
@@ -439,7 +429,7 @@
         <span class="icon">📷</span>
         <div style="font-size:0.82rem">點擊下方按鈕開啟相機</div>
       </div>
-      <video id="zxing-video" style="display:none;width:100%;height:100%;object-fit:cover;border-radius:12px;" playsinline muted></video>
+      <div id="qr-reader" style="display:none;width:100%;"></div>
       <div class="scan-overlay" id="scan-overlay" style="display:none">
         <div class="scan-frame"><div class="scan-line"></div></div>
       </div>
@@ -563,7 +553,8 @@ const statusLabel = { unread:'未讀', reading:'閱讀中', done:'已讀完', wi
 const statusTagClass = { reading:'reading', done:'done', wishlist:'wishlist', unread:'' };
 
 // ── Init ──────────────────────────────────────────────────
-document.addEventListener('zxing-ready', () => {
+// html5-qrcode 是同步載入，直接設定按鈕
+window.addEventListener('DOMContentLoaded', () => {
   const btn = document.getElementById('btn-start-scan');
   if (btn) btn.textContent = '📷 開啟相機掃描';
 });
@@ -637,67 +628,57 @@ async function apiPost(body) {
 }
 
 // ── Scanner ───────────────────────────────────────────────
-let zxingReader = null;
+let html5QrCode = null;
 
 async function startScanner() {
-  // 若 ZXing 未載入，等待最多 5 秒
-  if (!window._ZXingReady) {
-    setStatus('info', '⏳ 掃描器載入中，請稍候...');
-    await new Promise((resolve, reject) => {
-      const t = setTimeout(() => reject(new Error('載入逾時')), 5000);
-      document.addEventListener('zxing-ready', () => { clearTimeout(t); resolve(); }, { once: true });
-    }).catch(e => { setStatus('error', '掃描器載入失敗，請重新整理頁面'); throw e; });
-  }
-  setStatus('info', '');
-  const { BrowserMultiFormatReader } = window._ZXing;
-
   document.getElementById('scanner-placeholder').style.display = 'none';
-  document.getElementById('zxing-video').style.display = 'block';
-  document.getElementById('scan-overlay').style.display = 'flex';
+  document.getElementById('qr-reader').style.display = 'block';
+  document.getElementById('scan-overlay').style.display = 'none'; // html5-qrcode 自帶UI
   document.getElementById('btn-start-scan').style.display = 'none';
   document.getElementById('btn-stop-scan').style.display = 'block';
   scannerRunning = true;
 
   try {
-    zxingReader = new BrowserMultiFormatReader();
-    const video = document.getElementById('zxing-video');
+    html5QrCode = new Html5Qrcode('qr-reader');
+    const config = {
+      fps: 10,
+      qrbox: { width: 250, height: 100 },
+      formatsToSupport: [
+        Html5QrcodeSupportedFormats.EAN_13,
+        Html5QrcodeSupportedFormats.EAN_8,
+        Html5QrcodeSupportedFormats.CODE_128,
+      ],
+      aspectRatio: 1.5,
+    };
 
-    // 取得後鏡頭
-    const devices = await BrowserMultiFormatReader.listVideoInputDevices();
-    const backCamera = devices.find(d =>
-      d.label.toLowerCase().includes('back') ||
-      d.label.toLowerCase().includes('rear') ||
-      d.label.toLowerCase().includes('環境') ||
-      d.label.toLowerCase().includes('後')
-    ) || devices[devices.length - 1];
-
-    const deviceId = backCamera ? backCamera.deviceId : undefined;
-
-    let lastCode = '', lastTime = 0;
-    await zxingReader.decodeFromVideoDevice(deviceId, video, (result, err) => {
-      if (result) {
-        const code = result.getText();
-        const now = Date.now();
-        if (code === lastCode && now - lastTime < 3000) return;
-        lastCode = code; lastTime = now;
+    await html5QrCode.start(
+      { facingMode: 'environment' },
+      config,
+      (decodedText) => {
         if (navigator.vibrate) navigator.vibrate([50, 30, 50]);
         stopScanner();
-        lookupISBN(code);
-      }
-    });
+        lookupISBN(decodedText);
+      },
+      () => {} // 忽略每幀掃描失敗的錯誤
+    );
   } catch(e) {
-    setStatus('error', '無法開啟相機：' + e.message);
+    setStatus('error', '無法開啟相機，請確認已授予相機權限');
     stopScanner();
   }
 }
 
-function stopScanner() {
+async function stopScanner() {
   if (!scannerRunning) return;
-  try { if (zxingReader) { zxingReader.reset(); zxingReader = null; } } catch(e) {}
   scannerRunning = false;
+  try {
+    if (html5QrCode && html5QrCode.isScanning) {
+      await html5QrCode.stop();
+      html5QrCode.clear();
+    }
+    html5QrCode = null;
+  } catch(e) {}
   document.getElementById('scanner-placeholder').style.display = 'block';
-  document.getElementById('zxing-video').style.display = 'none';
-  document.getElementById('scan-overlay').style.display = 'none';
+  document.getElementById('qr-reader').style.display = 'none';
   document.getElementById('btn-start-scan').style.display = 'block';
   document.getElementById('btn-stop-scan').style.display = 'none';
 }
