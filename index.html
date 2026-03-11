@@ -6,8 +6,16 @@
 <title>書庫 · BookShelf</title>
 <script type="module">
   import { BrowserMultiFormatReader, NotFoundException } from 'https://esm.sh/@zxing/browser@0.1.5';
-  import { BarcodeFormat, DecodeHintType } from 'https://esm.sh/@zxing/library@0.21.3';
-  window._ZXing = { BrowserMultiFormatReader, NotFoundException, BarcodeFormat, DecodeHintType };
+  window._ZXing = { BrowserMultiFormatReader, NotFoundException };
+  window._ZXingReady = true;
+  // 通知按鈕可以啟用
+  document.dispatchEvent(new Event('zxing-ready'));
+</script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script>
+  if(window.pdfjsLib) pdfjsLib.GlobalWorkerOptions.workerSrc =
+    'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 </script>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,700;1,400&family=Noto+Serif+TC:wght@300;400;600&display=swap');
@@ -315,6 +323,51 @@
     border-radius: 50%; animation: spin 0.8s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
   .loading-text { font-size: 0.85rem; color: var(--muted); }
+  /* ── Ebook styles ── */
+  .ebook-drop-zone {
+    border: 2px dashed var(--aged);
+    border-radius: 12px;
+    padding: 28px 16px;
+    text-align: center;
+    cursor: pointer;
+    transition: all 0.2s;
+    background: white;
+    margin-top: 4px;
+  }
+  .ebook-drop-zone.drag-over {
+    border-color: var(--gold);
+    background: rgba(200,150,58,0.05);
+  }
+  .ebook-drop-zone .drop-icon { font-size: 2.2rem; display: block; margin-bottom: 8px; }
+  .ebook-drop-zone .drop-text { font-size: 0.82rem; color: var(--muted); line-height: 1.6; }
+  .ebook-badge {
+    display: inline-flex; align-items: center; gap: 4px;
+    font-size: 0.62rem; padding: 2px 8px; border-radius: 10px;
+    background: #e8f4fd; color: #1a6fa8; font-weight: 600;
+  }
+  .ebook-badge.epub { background: #f0e8fd; color: #6a1ab8; }
+  .has-ebook-banner {
+    background: #e8f4fd; border-left: 3px solid #3498db;
+    border-radius: 8px; padding: 10px 14px; margin-top: 10px;
+    font-size: 0.82rem; color: #1a6fa8; display: none;
+  }
+  .has-ebook-banner.show { display: block; }
+  .file-list { margin-top: 10px; }
+  .file-item {
+    display: flex; align-items: center; gap: 10px;
+    background: white; border-radius: 8px; padding: 10px 12px;
+    margin-bottom: 6px; box-shadow: 0 1px 4px var(--shadow);
+    font-size: 0.82rem;
+  }
+  .file-item-icon { font-size: 1.2rem; flex-shrink: 0; }
+  .file-item-info { flex: 1; min-width: 0; }
+  .file-item-name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .file-item-meta { font-size: 0.72rem; color: var(--muted); margin-top: 2px; }
+  .file-item-remove { background: none; border: none; color: var(--aged); cursor: pointer; font-size: 0.9rem; padding: 4px; }
+  .file-item-remove:hover { color: var(--accent); }
+  .progress-bar { height: 3px; background: var(--aged); border-radius: 2px; margin-top: 6px; overflow: hidden; }
+  .progress-fill { height: 100%; background: var(--gold); width: 0%; transition: width 0.3s; }
+
 </style>
 </head>
 <body>
@@ -368,7 +421,8 @@
   </header>
 
   <nav>
-    <button class="active" onclick="switchTab('scan', this)">📷 掃描登錄</button>
+    <button class="active" onclick="switchTab('scan', this)">📷 掃描</button>
+    <button onclick="switchTab('ebook', this)">💻 電子書</button>
     <button onclick="switchTab('library', this)">📚 書庫</button>
     <button onclick="switchTab('stats', this)">📊 統計</button>
   </nav>
@@ -387,7 +441,7 @@
       </div>
     </div>
 
-    <button class="btn btn-primary" id="btn-start-scan" onclick="startScanner()">📷 開啟相機掃描</button>
+    <button class="btn btn-primary" id="btn-start-scan" onclick="startScanner()">⏳ 掃描器載入中...</button>
     <button class="btn btn-secondary" id="btn-stop-scan" onclick="stopScanner()" style="display:none">■ 停止掃描</button>
 
     <div class="divider">或手動輸入</div>
@@ -407,6 +461,8 @@
       </div>
     </div>
 
+    <div class="has-ebook-banner" id="has-ebook-banner"></div>
+
     <div id="add-form" style="display:none">
       <div class="field-group">
         <label class="field-label">閱讀狀態</label>
@@ -423,6 +479,27 @@
       </div>
       <button class="btn btn-gold" id="btn-save" onclick="saveBook()">✦ 儲存到書庫</button>
     </div>
+  </div>
+
+
+  <!-- EBOOK -->
+  <div class="view" id="view-ebook">
+    <div class="section-title">匯入電子書</div>
+
+    <div class="ebook-drop-zone" id="ebook-drop-zone"
+      onclick="document.getElementById('ebook-file-input').click()"
+      ondragover="ebookDragOver(event)" ondragleave="ebookDragLeave(event)" ondrop="ebookDrop(event)">
+      <span class="drop-icon">📂</span>
+      <div class="drop-text">點擊選擇或拖曳 PDF / EPUB 到這裡<br><span style="font-size:0.72rem;opacity:0.7">支援批次多檔匯入</span></div>
+      <div class="progress-bar" id="ebook-progress-bar" style="margin-top:12px;display:none">
+        <div class="progress-fill" id="ebook-progress-fill"></div>
+      </div>
+    </div>
+    <input type="file" id="ebook-file-input" accept=".pdf,.epub" multiple style="display:none" onchange="handleEbookFiles(this.files)">
+
+    <div class="file-list" id="ebook-file-list"></div>
+
+    <div id="ebook-preview-list"></div>
   </div>
 
   <!-- LIBRARY -->
@@ -474,6 +551,7 @@
 const CONFIG_KEY = 'bookshelf_api_url';
 let API_URL = localStorage.getItem(CONFIG_KEY) || '';
 let books = [];
+let ebookFiles = JSON.parse(localStorage.getItem('bookshelf_ebooks') || '[]'); // {name, title, author, type, size}
 let currentBook = null;
 let scannerRunning = false;
 
@@ -481,6 +559,11 @@ const statusLabel = { unread:'未讀', reading:'閱讀中', done:'已讀完', wi
 const statusTagClass = { reading:'reading', done:'done', wishlist:'wishlist', unread:'' };
 
 // ── Init ──────────────────────────────────────────────────
+document.addEventListener('zxing-ready', () => {
+  const btn = document.getElementById('btn-start-scan');
+  if (btn) btn.textContent = '📷 開啟相機掃描';
+});
+
 window.addEventListener('DOMContentLoaded', () => {
   if (API_URL) {
     showApp();
@@ -553,11 +636,15 @@ async function apiPost(body) {
 let zxingReader = null;
 
 async function startScanner() {
-  // 等 ZXing 載入
-  if (!window._ZXing) {
-    setStatus('error', '掃描器載入中，請稍後再試');
-    return;
+  // 若 ZXing 未載入，等待最多 5 秒
+  if (!window._ZXingReady) {
+    setStatus('info', '⏳ 掃描器載入中，請稍候...');
+    await new Promise((resolve, reject) => {
+      const t = setTimeout(() => reject(new Error('載入逾時')), 5000);
+      document.addEventListener('zxing-ready', () => { clearTimeout(t); resolve(); }, { once: true });
+    }).catch(e => { setStatus('error', '掃描器載入失敗，請重新整理頁面'); throw e; });
   }
+  setStatus('info', '');
   const { BrowserMultiFormatReader } = window._ZXing;
 
   document.getElementById('scanner-placeholder').style.display = 'none';
@@ -673,6 +760,17 @@ function showPreview(book) {
     ? `<img src="${book.cover}" alt="封面" onerror="this.parentElement.innerHTML='📖'">`
     : '📖';
   document.getElementById('add-form').style.display = 'block';
+
+  // 比對是否已有電子版
+  const ebookMatch = checkEbookMatch(book.title, book.author);
+  const banner = document.getElementById('has-ebook-banner');
+  if (ebookMatch) {
+    banner.textContent = `💻 你已有電子版：${ebookMatch}`;
+    banner.classList.add('show');
+  } else {
+    banner.classList.remove('show');
+  }
+
   setStatus('success', `✓ 找到：${book.title}`);
 }
 
@@ -683,12 +781,16 @@ async function saveBook() {
     showToast('此書已在書庫中！'); return;
   }
 
+  const ebookMatch = checkEbookMatch(currentBook.title, currentBook.author);
   const book = {
     ...currentBook,
     status: document.getElementById('field-status').value,
     note: document.getElementById('field-note').value,
     addedAt: new Date().toISOString(),
     id: Date.now(),
+    hasEbook: !!ebookMatch,
+    ebookName: ebookMatch || '',
+    ebookType: ebookMatch ? (ebookMatch.toLowerCase().endsWith('.epub') ? 'epub' : 'pdf') : '',
   };
 
   document.getElementById('btn-save').disabled = true;
@@ -787,7 +889,8 @@ function showDetail(id) {
         ).join('')}
       </select>
     </div>
-    <div class="detail-row"><span class="detail-key">備註</span><span>${b.note||'—'}</span></div>
+    <div class="detail-row"><span class="detail-key">電子版</span><span>\${b.hasEbook ? \`💻 有 (\${b.ebookType?.toUpperCase()||'PDF'}) - \${b.ebookName||''}\` : '—'}</span></div>
+    <div class="detail-row"><span class="detail-key">備註</span><span>\${b.note||'—'}</span></div>
     <div class="detail-row"><span class="detail-key">加入日期</span><span>${new Date(b.addedAt).toLocaleDateString('zh-TW')}</span></div>
     ${b.description?`<div style="margin-top:12px;font-size:0.8rem;color:var(--muted);line-height:1.7">${b.description.slice(0,200)}${b.description.length>200?'…':''}</div>`:''}
   `;
@@ -835,8 +938,143 @@ function switchTab(name, btn) {
   document.getElementById('view-'+name).classList.add('active');
   btn.classList.add('active');
   if (name==='library') { loadBooks(); }
+  if (name==='ebook') { renderEbookList(); }
   if (name==='stats') { loadBooks().then(()=>renderStats()); renderStats(); }
   if (name!=='scan' && scannerRunning) stopScanner();
+}
+
+
+// ── Ebook ─────────────────────────────────────────────────
+function saveEbookStore() {
+  localStorage.setItem('bookshelf_ebooks', JSON.stringify(ebookFiles));
+}
+
+function checkEbookMatch(title, author) {
+  if (!title) return null;
+  const t = title.toLowerCase().replace(/\s/g,'');
+  const a = (author||'').toLowerCase().replace(/\s/g,'');
+  for (const f of ebookFiles) {
+    const ft = (f.title||f.name).toLowerCase().replace(/\s/g,'');
+    const fa = (f.author||'').toLowerCase().replace(/\s/g,'');
+    // 書名相似度比對（包含關係）
+    if (ft.includes(t.slice(0,6)) || t.includes(ft.slice(0,6))) return f.name;
+    if (a && fa && (fa.includes(a.slice(0,3)) || a.includes(fa.slice(0,3)))) {
+      if (ft.includes(t.slice(0,4)) || t.includes(ft.slice(0,4))) return f.name;
+    }
+  }
+  return null;
+}
+
+function ebookDragOver(e) {
+  e.preventDefault();
+  document.getElementById('ebook-drop-zone').classList.add('drag-over');
+}
+function ebookDragLeave(e) {
+  document.getElementById('ebook-drop-zone').classList.remove('drag-over');
+}
+function ebookDrop(e) {
+  e.preventDefault();
+  document.getElementById('ebook-drop-zone').classList.remove('drag-over');
+  handleEbookFiles(e.dataTransfer.files);
+}
+
+async function handleEbookFiles(fileList) {
+  const files = Array.from(fileList).filter(f =>
+    f.name.toLowerCase().endsWith('.pdf') || f.name.toLowerCase().endsWith('.epub')
+  );
+  if (!files.length) { showToast('請選擇 PDF 或 EPUB 檔案'); return; }
+
+  const bar = document.getElementById('ebook-progress-bar');
+  const fill = document.getElementById('ebook-progress-fill');
+  bar.style.display = 'block';
+
+  for (let i = 0; i < files.length; i++) {
+    fill.style.width = ((i / files.length) * 100) + '%';
+    const f = files[i];
+    const type = f.name.toLowerCase().endsWith('.epub') ? 'epub' : 'pdf';
+    let title = f.name.replace(/\.(pdf|epub)$/i, '');
+    let author = '';
+
+    // 嘗試從 PDF metadata 讀取書名作者
+    if (type === 'pdf' && window.pdfjsLib) {
+      try {
+        const ab = await f.arrayBuffer();
+        const pdf = await pdfjsLib.getDocument({ data: ab }).promise;
+        const meta = await pdf.getMetadata();
+        if (meta.info?.Title) title = meta.info.Title;
+        if (meta.info?.Author) author = meta.info.Author;
+      } catch(e) {}
+    }
+
+    // EPUB：解析 OPF metadata
+    if (type === 'epub') {
+      try {
+        const ab = await f.arrayBuffer();
+        const { JSZip } = window;
+        if (JSZip) {
+          const zip = await JSZip.loadAsync(ab);
+          // 找 OPF 檔案
+          const container = await zip.file('META-INF/container.xml')?.async('text');
+          if (container) {
+            const opfPath = container.match(/full-path="([^"]+\.opf)"/)?.[1];
+            if (opfPath) {
+              const opf = await zip.file(opfPath)?.async('text');
+              if (opf) {
+                const t = opf.match(/<dc:title[^>]*>([^<]+)<\/dc:title>/)?.[1];
+                const a = opf.match(/<dc:creator[^>]*>([^<]+)<\/dc:creator>/)?.[1];
+                if (t) title = t.trim();
+                if (a) author = a.trim();
+              }
+            }
+          }
+        }
+      } catch(e) {}
+    }
+
+    // 避免重複
+    if (!ebookFiles.find(x => x.name === f.name)) {
+      ebookFiles.push({
+        name: f.name,
+        title,
+        author,
+        type,
+        size: (f.size / 1024 / 1024).toFixed(1) + ' MB',
+        addedAt: new Date().toISOString(),
+      });
+    }
+  }
+
+  fill.style.width = '100%';
+  setTimeout(() => { bar.style.display = 'none'; fill.style.width = '0%'; }, 800);
+
+  saveEbookStore();
+  renderEbookList();
+  showToast(`✦ 已匯入 ${files.length} 個電子書檔案`);
+}
+
+function renderEbookList() {
+  const list = document.getElementById('ebook-file-list');
+  if (!ebookFiles.length) {
+    list.innerHTML = '<div style="text-align:center;padding:20px;font-size:0.82rem;color:var(--muted)">尚未匯入任何電子書</div>';
+    return;
+  }
+  list.innerHTML = ebookFiles.map((f, i) => `
+    <div class="file-item">
+      <div class="file-item-icon">${f.type === 'epub' ? '📗' : '📄'}</div>
+      <div class="file-item-info">
+        <div class="file-item-name">${f.title || f.name}</div>
+        <div class="file-item-meta">${f.author ? f.author + ' · ' : ''}${f.type.toUpperCase()} · ${f.size}</div>
+      </div>
+      <span class="ebook-badge ${f.type}">${f.type.toUpperCase()}</span>
+      <button class="file-item-remove" onclick="removeEbook(${i})">✕</button>
+    </div>
+  `).join('');
+}
+
+function removeEbook(i) {
+  ebookFiles.splice(i, 1);
+  saveEbookStore();
+  renderEbookList();
 }
 
 // ── Helpers ───────────────────────────────────────────────
