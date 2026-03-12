@@ -1175,29 +1175,22 @@ async function handleEbookFiles(fileList) {
     // 查 API 補齊書籍資料（加間隔避免 429）
     if (i > 0) await sleep(500); // 每本之間等 0.5 秒
 
+    // 只有找到 ISBN 才打 API，避免 429
     if (meta.isbn) {
       try {
         const r = await fetch(`https://www.googleapis.com/books/v1/volumes?q=isbn:${meta.isbn}`);
-        if (r.status === 429) {
-          await sleep(3000); // 被限流就等 3 秒再試一次
-          const r2 = await fetch(`https://www.googleapis.com/books/v1/volumes?q=isbn:${meta.isbn}`);
-          if (r2.ok) {
-            const d = await r2.json();
-            if (d.totalItems > 0) bookInfo = parseGoogleBook(d.items[0].volumeInfo, meta.isbn);
-          }
-        } else if (r.ok) {
+        if (r.ok) {
           const d = await r.json();
           if (d.totalItems > 0) bookInfo = parseGoogleBook(d.items[0].volumeInfo, meta.isbn);
         }
       } catch(e) {}
     }
-    if (!bookInfo) bookInfo = await lookupByTitle(meta.title);
 
-    // API 完全失敗 → 用 metadata 當書籍資料，先存進去再說
-    if (!bookInfo && (meta.title || meta.author)) {
+    // 沒有 ISBN 或 API 失敗 → 直接用 metadata，不打書名查詢
+    if (!bookInfo) {
       bookInfo = {
         isbn: meta.isbn || '',
-        title: meta.title,
+        title: meta.title || f.name.replace(/\.(pdf|epub)$/i,''),
         author: meta.author || '未知作者',
         publisher: '', year: '', pages: '', cover: '', categories: '', description: '',
       };
