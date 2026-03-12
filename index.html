@@ -414,8 +414,19 @@
     <input class="setup-url-input" id="api-url-input"
       placeholder="https://script.google.com/macros/s/...../exec"
       type="url" />
+
+    <div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--aged)">
+      <div style="font-size:0.78rem;color:var(--muted);margin-bottom:8px">
+        📚 Google Books API Key（選填，提升查詢穩定性）<br>
+        <span style="font-size:0.7rem">沒有也可以先用，之後在統計頁設定</span>
+      </div>
+      <input class="setup-url-input" id="books-key-input"
+        placeholder="AIzaSy..."
+        type="text" style="font-size:0.8rem" />
+    </div>
+
     <button class="btn-setup" onclick="connectSheet()">✦ 連結並開始使用</button>
-    <div class="setup-hint">URL 只存在你的瀏覽器裡，不會上傳給任何人</div>
+    <div class="setup-hint">所有設定只存在你的瀏覽器裡，不會上傳給任何人</div>
   </div>
 </div>
 
@@ -543,6 +554,8 @@
     <div id="recent-list"></div>
     <div style="margin-top:20px;padding-top:16px;border-top:1px solid var(--aged);">
       <button class="btn btn-secondary" onclick="resetSetup()" style="font-size:0.78rem;color:var(--muted)">⚙ 重新設定 Google Sheet 連結</button>
+      <button class="btn btn-secondary" onclick="showBooksKeyDialog()" style="font-size:0.78rem;color:var(--muted);margin-top:8px">🔑 設定 Google Books API Key</button>
+      <div id="books-key-status" style="font-size:0.72rem;color:var(--muted);margin-top:6px"></div>
     </div>
   </div>
 </div>
@@ -569,7 +582,9 @@
 <script>
 // ── Config ────────────────────────────────────────────────
 const CONFIG_KEY = 'bookshelf_api_url';
+const BOOKS_KEY_KEY = 'bookshelf_books_api_key';
 let API_URL = localStorage.getItem(CONFIG_KEY) || '';
+let BOOKS_API_KEY = localStorage.getItem(BOOKS_KEY_KEY) || '';
 let books = [];
 let currentFilter = 'all';
 let ebookFiles = JSON.parse(localStorage.getItem('bookshelf_ebooks') || '[]'); // {name, title, author, type, size}
@@ -606,6 +621,11 @@ async function connectSheet() {
     if (d.ok !== undefined) {
       localStorage.setItem(CONFIG_KEY, url);
       API_URL = url;
+      const booksKey = document.getElementById('books-key-input')?.value.trim();
+      if (booksKey) {
+        localStorage.setItem(BOOKS_KEY_KEY, booksKey);
+        BOOKS_API_KEY = booksKey;
+      }
       hideLoading();
       showApp();
       books = d.books || [];
@@ -629,6 +649,23 @@ function resetSetup() {
   if (!confirm('確定要重新設定 Google Sheet 連結？')) return;
   localStorage.removeItem(CONFIG_KEY);
   location.reload();
+}
+
+function showBooksKeyDialog() {
+  const current = BOOKS_API_KEY ? BOOKS_API_KEY.slice(0,8) + '...' : '（尚未設定）';
+  const key = prompt(`Google Books API Key\n目前：${current}\n\n貼上新的 Key，或清空來移除：`, BOOKS_API_KEY);
+  if (key === null) return; // 按取消
+  if (key.trim() === '') {
+    localStorage.removeItem(BOOKS_KEY_KEY);
+    BOOKS_API_KEY = '';
+    document.getElementById('books-key-status').textContent = 'API Key 已移除';
+    showToast('API Key 已移除');
+  } else {
+    localStorage.setItem(BOOKS_KEY_KEY, key.trim());
+    BOOKS_API_KEY = key.trim();
+    document.getElementById('books-key-status').textContent = '✓ API Key 已設定：' + key.trim().slice(0,8) + '...';
+    showToast('✦ API Key 已儲存');
+  }
 }
 
 // ── API Calls ─────────────────────────────────────────────
@@ -717,7 +754,8 @@ async function lookupISBN(isbn) {
   document.getElementById('add-form').style.display = 'none';
 
   try {
-    const r = await fetch(`https://www.googleapis.com/books/v1/volumes?q=isbn:${isbn}`);
+    const keyParam = BOOKS_API_KEY ? `&key=${BOOKS_API_KEY}` : '';
+    const r = await fetch(`https://www.googleapis.com/books/v1/volumes?q=isbn:${isbn}${keyParam}`);
     const d = await r.json();
     if (d.totalItems > 0) {
       const info = d.items[0].volumeInfo;
@@ -1178,7 +1216,8 @@ async function handleEbookFiles(fileList) {
     // 只有找到 ISBN 才打 API，避免 429
     if (meta.isbn) {
       try {
-        const r = await fetch(`https://www.googleapis.com/books/v1/volumes?q=isbn:${meta.isbn}`);
+        const keyParam = BOOKS_API_KEY ? `&key=${BOOKS_API_KEY}` : '';
+        const r = await fetch(`https://www.googleapis.com/books/v1/volumes?q=isbn:${meta.isbn}${keyParam}`);
         if (r.ok) {
           const d = await r.json();
           if (d.totalItems > 0) bookInfo = parseGoogleBook(d.items[0].volumeInfo, meta.isbn);
