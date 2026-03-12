@@ -860,25 +860,30 @@ function showDetail(id) {
   if (!b) return;
   document.getElementById('modal-title').textContent = b.title;
   document.getElementById('modal-author').textContent = b.author;
-  document.getElementById('modal-body').innerHTML = `
-    <div class="detail-row"><span class="detail-key">ISBN</span><span>${b.isbn}</span></div>
-    <div class="detail-row"><span class="detail-key">出版社</span><span>${b.publisher||'—'}</span></div>
-    <div class="detail-row"><span class="detail-key">年份</span><span>${b.year||'—'}</span></div>
-    <div class="detail-row"><span class="detail-key">頁數</span><span>${b.pages||'—'}</span></div>
-    <div class="detail-row"><span class="detail-key">分類</span><span>${b.categories||'—'}</span></div>
-    <div class="detail-row">
-      <span class="detail-key">狀態</span>
-      <select class="status-select" onchange="updateStatus('${b.id}', this.value)">
-        ${['unread','reading','done','wishlist'].map(s =>
-          `<option value="${s}"${b.status===s?' selected':''}>${statusLabel[s]}</option>`
-        ).join('')}
-      </select>
-    </div>
-    <div class="detail-row"><span class="detail-key">電子版</span><span>\${b.hasEbook ? \`💻 有 (\${b.ebookType?.toUpperCase()||'PDF'}) - \${b.ebookName||''}\` : '—'}</span></div>
-    <div class="detail-row"><span class="detail-key">備註</span><span>\${b.note||'—'}</span></div>
-    <div class="detail-row"><span class="detail-key">加入日期</span><span>${new Date(b.addedAt).toLocaleDateString('zh-TW')}</span></div>
-    ${b.description?`<div style="margin-top:12px;font-size:0.8rem;color:var(--muted);line-height:1.7">${b.description.slice(0,200)}${b.description.length>200?'…':''}</div>`:''}
-  `;
+
+  const ebookInfo = b.hasEbook
+    ? `💻 有 (${(b.ebookType||'pdf').toUpperCase()}) — ${b.ebookName||''}`
+    : '—';
+  const statusOptions = ['unread','reading','done','wishlist'].map(s =>
+    `<option value="${s}"${b.status===s?' selected':''}>${statusLabel[s]}</option>`
+  ).join('');
+  const descHtml = b.description
+    ? `<div style="margin-top:12px;font-size:0.8rem;color:var(--muted);line-height:1.7">${b.description.slice(0,200)}${b.description.length>200?'…':''}</div>`
+    : '';
+
+  document.getElementById('modal-body').innerHTML =
+    `<div class="detail-row"><span class="detail-key">ISBN</span><span>${b.isbn||'—'}</span></div>` +
+    `<div class="detail-row"><span class="detail-key">出版社</span><span>${b.publisher||'—'}</span></div>` +
+    `<div class="detail-row"><span class="detail-key">年份</span><span>${b.year||'—'}</span></div>` +
+    `<div class="detail-row"><span class="detail-key">頁數</span><span>${b.pages||'—'}</span></div>` +
+    `<div class="detail-row"><span class="detail-key">分類</span><span>${b.categories||'—'}</span></div>` +
+    `<div class="detail-row"><span class="detail-key">狀態</span>` +
+    `<select class="status-select" onchange="updateStatus('${b.id}', this.value)">${statusOptions}</select></div>` +
+    `<div class="detail-row"><span class="detail-key">電子版</span><span>${ebookInfo}</span></div>` +
+    `<div class="detail-row"><span class="detail-key">備註</span><span>${b.note||'—'}</span></div>` +
+    `<div class="detail-row"><span class="detail-key">加入日期</span><span>${b.addedAt ? new Date(b.addedAt).toLocaleDateString('zh-TW') : '—'}</span></div>` +
+    descHtml;
+
   document.getElementById('modal-backdrop').classList.add('show');
 }
 
@@ -963,6 +968,60 @@ function ebookDrop(e) {
   handleEbookFiles(e.dataTransfer.files);
 }
 
+// ISBN 正則：978/979 開頭 13 碼，或 10 碼
+const ISBN_RE = /(?:ISBN[\s:\-]*)?(97[89][\s\-]?(?:\d[\s\-]?){9}\d|(?:\d[\s\-]?){9}[\dXx])/gi;
+
+function extractISBNfromText(text) {
+  const matches = [...text.matchAll(ISBN_RE)];
+  for (const m of matches) {
+    const cleaned = m[1].replace(/[\s\-]/g, '');
+    if (cleaned.length === 13 && cleaned.startsWith('97')) return cleaned;
+    if (cleaned.length === 10) return cleaned;
+  }
+  return '';
+}
+
+async function scanEpubForISBN(zip, opfDir) {
+  // 優先掃版權頁（通常是 copyright、colophon、titlepage 等檔名）
+  const priorityKeywords = ['copyright','colophon','title','legal','imprint','版權','版权'];
+  const allFiles = Object.keys(zip.files).filter(k => k.endsWith('.html') || k.endsWith('.xhtml') || k.endsWith('.htm'));
+
+  // 排序：優先檔名包含關鍵字的，其次是前幾個內容檔
+  const sorted = [
+    ...allFiles.filter(k => priorityKeywords.some(kw => k.toLowerCase().includes(kw))),
+    ...allFiles.filter(k => !priorityKeywords.some(kw => k.toLowerCase().includes(kw))).slice(0, 5),
+  ];
+
+  for (const filePath of sorted) {
+    try {
+      const html = await zip.file(filePath)?.async('text');
+      if (!html) continue;
+      // 去除 HTML 標籤後找 ISBN
+      const text = html.replace(/<[^>]+>/g, ' ');
+      const found = extractISBNfromText(text);
+      if (found) return found;
+    } catch(e) {}
+  }
+  return '';
+}
+
+async function scanPdfForISBN(pdf) {
+  // 掃前 5 頁和後 3 頁（版權頁通常在最前或最後）
+  const total = pdf.numPages;
+  const pagesToScan = new Set([1, 2, 3, 4, 5, total, total-1, total-2].filter(p => p >= 1 && p <= total));
+
+  for (const pageNum of pagesToScan) {
+    try {
+      const page = await pdf.getPage(pageNum);
+      const content = await page.getTextContent();
+      const text = content.items.map(i => i.str).join(' ');
+      const found = extractISBNfromText(text);
+      if (found) return found;
+    } catch(e) {}
+  }
+  return '';
+}
+
 async function extractEbookMeta(f) {
   const type = f.name.toLowerCase().endsWith('.epub') ? 'epub' : 'pdf';
   let title = f.name.replace(/\.(pdf|epub)$/i, '');
@@ -972,9 +1031,17 @@ async function extractEbookMeta(f) {
     try {
       const ab = await f.arrayBuffer();
       const pdf = await pdfjsLib.getDocument({ data: ab }).promise;
+
+      // ① 先從 metadata 讀
       const meta = await pdf.getMetadata();
       if (meta.info?.Title) title = meta.info.Title;
       if (meta.info?.Author) author = meta.info.Author;
+      // metadata 裡有時也有 ISBN
+      const metaText = JSON.stringify(meta.info);
+      isbn = extractISBNfromText(metaText);
+
+      // ② metadata 沒有 ISBN → 掃內文版權頁
+      if (!isbn) isbn = await scanPdfForISBN(pdf);
     } catch(e) {}
   }
 
@@ -986,17 +1053,27 @@ async function extractEbookMeta(f) {
         const container = await zip.file('META-INF/container.xml')?.async('text');
         if (container) {
           const opfPath = container.match(/full-path="([^"]+\.opf)"/)?.[1];
+          const opfDir = opfPath ? opfPath.split('/').slice(0,-1).join('/') : '';
           if (opfPath) {
             const opf = await zip.file(opfPath)?.async('text');
             if (opf) {
               const t = opf.match(/<dc:title[^>]*>([^<]+)<\/dc:title>/)?.[1];
               const a = opf.match(/<dc:creator[^>]*>([^<]+)<\/dc:creator>/)?.[1];
-              const id = opf.match(/<dc:identifier[^>]*>([\d-]{10,17})<\/dc:identifier>/)?.[1];
               if (t) title = t.trim();
               if (a) author = a.trim();
-              if (id) isbn = id.replace(/-/g,'');
+
+              // ① OPF identifier 找 ISBN
+              const ids = [...opf.matchAll(/<dc:identifier[^>]*>([^<]+)<\/dc:identifier>/g)];
+              for (const m of ids) {
+                const cleaned = m[1].replace(/[\s\-]/g,'');
+                if (/^97[89]\d{10}$/.test(cleaned) || /^\d{9}[\dXx]$/.test(cleaned)) {
+                  isbn = cleaned; break;
+                }
+              }
             }
           }
+          // ② OPF 沒有 → 掃版權頁內文
+          if (!isbn) isbn = await scanEpubForISBN(zip, '');
         }
       }
     } catch(e) {}
