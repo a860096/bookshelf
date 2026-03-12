@@ -317,6 +317,24 @@
     border-radius: 50%; animation: spin 0.8s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
   .loading-text { font-size: 0.85rem; color: var(--muted); }
+
+  /* ── Filter tabs ── */
+  .filter-tabs {
+    display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px;
+  }
+  .filter-tab {
+    padding: 5px 12px; border-radius: 16px; font-size: 0.75rem;
+    border: 1.5px solid var(--aged); background: white; color: var(--muted);
+    cursor: pointer; font-family: 'Noto Serif TC', serif;
+    transition: all 0.15s; white-space: nowrap;
+  }
+  .filter-tab.active {
+    background: var(--ink); color: var(--paper); border-color: var(--ink);
+  }
+  .filter-tab.f-reading.active { background: #856404; border-color: #856404; color: white; }
+  .filter-tab.f-done.active { background: #0e6655; border-color: #0e6655; color: white; }
+  .filter-tab.f-wishlist.active { background: var(--accent); border-color: var(--accent); color: white; }
+  .filter-tab.f-ebook.active { background: #1a6fa8; border-color: #1a6fa8; color: white; }
   /* ── Ebook styles ── */
   .ebook-drop-zone {
     border: 2px dashed var(--aged);
@@ -502,9 +520,17 @@
       <span class="section-title" style="margin-bottom:0">藏書清單</span>
       <span class="library-count" id="lib-count">—</span>
     </div>
+    <div class="filter-tabs">
+      <button class="filter-tab active" onclick="setFilter('all', this)">全部</button>
+      <button class="filter-tab f-reading" onclick="setFilter('reading', this)">📖 閱讀中</button>
+      <button class="filter-tab f-done" onclick="setFilter('done', this)">✓ 已讀完</button>
+      <button class="filter-tab" onclick="setFilter('unread', this)">未讀</button>
+      <button class="filter-tab f-wishlist" onclick="setFilter('wishlist', this)">♡ 想讀</button>
+      <button class="filter-tab f-ebook" onclick="setFilter('ebook', this)">💻 有電子版</button>
+    </div>
     <div class="search-wrap">
       <span class="search-icon">🔍</span>
-      <input class="search-input" placeholder="搜尋書名、作者..." oninput="renderLibrary(this.value)">
+      <input class="search-input" id="lib-search" placeholder="搜尋書名、作者..." oninput="renderLibrary(this.value)">
     </div>
     <div id="book-list"><div class="empty"><span class="empty-icon">⏳</span><div class="empty-text">載入中...</div></div></div>
   </div>
@@ -545,6 +571,7 @@
 const CONFIG_KEY = 'bookshelf_api_url';
 let API_URL = localStorage.getItem(CONFIG_KEY) || '';
 let books = [];
+let currentFilter = 'all';
 let ebookFiles = JSON.parse(localStorage.getItem('bookshelf_ebooks') || '[]'); // {name, title, author, type, size}
 let currentBook = null;
 let scannerRunning = false;
@@ -808,13 +835,25 @@ function resetScanForm() {
 }
 
 // ── Library ───────────────────────────────────────────────
+function setFilter(filter, btn) {
+  currentFilter = filter;
+  document.querySelectorAll('.filter-tab').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  renderLibrary(document.getElementById('lib-search')?.value || '');
+}
+
 function renderLibrary(q) {
   const query = (q || '').toLowerCase();
-  const filtered = books.filter(b =>
-    !query || b.title?.toLowerCase().includes(query) ||
-    b.author?.toLowerCase().includes(query) ||
-    (b.note && b.note.toLowerCase().includes(query))
-  );
+  const filtered = books.filter(b => {
+    const matchQuery = !query || b.title?.toLowerCase().includes(query) ||
+      b.author?.toLowerCase().includes(query) ||
+      (b.note && b.note.toLowerCase().includes(query));
+    const matchFilter =
+      currentFilter === 'all' ? true :
+      currentFilter === 'ebook' ? !!b.hasEbook :
+      b.status === currentFilter;
+    return matchQuery && matchFilter;
+  });
   document.getElementById('lib-count').textContent = filtered.length + ' 本';
   const list = document.getElementById('book-list');
   if (filtered.length === 0) {
