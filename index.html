@@ -1087,37 +1087,37 @@ async function handleEbookFiles(fileList) {
     };
     ebookFiles.push(ebookEntry);
 
-    // 比對書庫是否已有此書
-    const existingBook = books.find(b =>
-      (ebookEntry.isbn && String(b.isbn) === String(ebookEntry.isbn)) ||
-      checkEbookMatch(b.title, b.author) === f.name
-    );
+    // ① 精確比對：ISBN 完全符合
+    const isbnMatch = ebookEntry.isbn
+      ? books.find(b => String(b.isbn) === String(ebookEntry.isbn))
+      : null;
 
-    if (existingBook) {
-      // 已有實體書 → 更新標記
-      existingBook.hasEbook = true;
-      existingBook.ebookName = f.name;
-      existingBook.ebookType = meta.type;
-      try {
-        await apiPost({ action: 'updateEbook', id: existingBook.id, ebookName: f.name, ebookType: meta.type });
-      } catch(e) {}
+    // ② 模糊比對：書名相似（不靠 ISBN）
+    const titleMatch = !isbnMatch ? findTitleSimilar(ebookEntry.title) : null;
+
+    if (isbnMatch) {
+      // ISBN 完全符合 → 直接合併，不詢問
+      await mergeEbookToBook(isbnMatch, f.name, meta.type);
       merged++;
-    } else if (bookInfo) {
-      // 沒有實體書 → 新增一筆電子版記錄
-      const newBook = {
-        ...bookInfo,
-        id: Date.now() + i,
-        status: 'unread',
-        note: '',
-        addedAt: new Date().toISOString(),
-        hasEbook: true,
-        ebookName: f.name,
-        ebookType: meta.type,
-      };
-      try {
-        const res = await apiPost({ action: 'add', book: newBook });
-        if (res.ok) { books.unshift(newBook); added++; }
-      } catch(e) {}
+
+    } else if (titleMatch) {
+      // 書名相似 → 跳出詢問
+      const confirm = window.confirm(
+        `找到疑似相同的書：\n「${titleMatch.title}」\n\n是同一本嗎？\n（確定→合併，取消→另存新檔）`
+      );
+      if (confirm) {
+        await mergeEbookToBook(titleMatch, f.name, meta.type);
+        merged++;
+      } else {
+        // 使用者說不是同一本 → 新增
+        await addNewEbookToLibrary(bookInfo, ebookEntry, meta, i);
+        added++;
+      }
+
+    } else {
+      // 完全找不到對應 → 直接新增
+      const didAdd = await addNewEbookToLibrary(bookInfo, ebookEntry, meta, i);
+      if (didAdd) added++;
     }
   }
 
@@ -1134,6 +1134,55 @@ async function handleEbookFiles(fileList) {
   showToast(msg.join('・'));
 }
 
+
+// 書名相似度比對（比 checkEbookMatch 更精準）
+function findTitleSimilar(ebookTitle) {
+  if (!ebookTitle) return null;
+  const et = ebookTitle.toLowerCase().replace(/[\s　，。！？,!?.]/g, '');
+  if (et.length < 2) return null;
+  return books.find(b => {
+    if (b.hasEbook) return false; // 已有電子版就跳過
+    const bt = (b.title || '').toLowerCase().replace(/[\s　，。！？,!?.]/g, '');
+    if (bt.length < 2) return false;
+    // 其中一方包含另一方的前6字（或全部）
+    const minLen = Math.min(et.length, bt.length, 6);
+    return et.slice(0, minLen) === bt.slice(0, minLen);
+  }) || null;
+}
+
+async function mergeEbookToBook(book, ebookName, ebookType) {
+  book.hasEbook = true;
+  book.ebookName = ebookName;
+  book.ebookType = ebookType;
+  try {
+    await apiPost({ action: 'updateEbook', id: book.id, ebookName, ebookType });
+  } catch(e) {}
+}
+
+async function addNewEbookToLibrary(bookInfo, ebookEntry, meta, i) {
+  const info = bookInfo || {
+    isbn: ebookEntry.isbn || '',
+    title: ebookEntry.title,
+    author: ebookEntry.author || '未知作者',
+    publisher: '', year: '', pages: '', cover: '', categories: '', description: '',
+  };
+  const newBook = {
+    ...info,
+    id: Date.now() + i,
+    status: 'unread',
+    note: '',
+    addedAt: new Date().toISOString(),
+    hasEbook: true,
+    ebookName: ebookEntry.name,
+    ebookType: meta.type,
+  };
+  try {
+    const res = await apiPost({ action: 'add', book: newBook });
+    if (res.ok) { books.unshift(newBook); return true; }
+  } catch(e) {}
+  return false;
+}
+
 function renderEbookList() {
   const list = document.getElementById('ebook-file-list');
   if (!ebookFiles.length) {
@@ -1141,14 +1190,13 @@ function renderEbookList() {
     return;
   }
 
-  // 比對狀態
   list.innerHTML = ebookFiles.map((f, i) => {
     const matched = books.find(b => b.ebookName === f.name || (f.isbn && String(b.isbn) === String(f.isbn)));
     const statusBadge = matched
       ? `<span style="font-size:0.62rem;padding:2px 7px;border-radius:10px;background:#d1f2eb;color:#0e6655">✓ 已入庫</span>`
-      : `<span style="font-size:0.62rem;padding:2px 7px;border-radius:10px;background:#fff3cd;color:#856404">待處理</span>`;
+      : `<button onclick="manualAddEbook(${i})" style="font-size:0.62rem;padding:2px 7px;border-radius:10px;background:#fff3cd;color:#856404;border:none;cursor:pointer;">＋ 手動加入</button>`;
     return `
-    <div class="file-item">
+    <div class="file-item" id="ebook-item-${i}">
       <div class="file-item-icon">${f.type === 'epub' ? '📗' : '📄'}</div>
       <div class="file-item-info">
         <div class="file-item-name">${f.title || f.name}</div>
@@ -1160,6 +1208,50 @@ function renderEbookList() {
       </div>
     </div>`;
   }).join('');
+}
+
+async function manualAddEbook(i) {
+  const f = ebookFiles[i];
+  if (!f) return;
+
+  // 讓使用者確認/修改書名作者
+  const title = prompt('書名：', f.title || f.name.replace(/\.(pdf|epub)$/i,''));
+  if (!title) return;
+  const author = prompt('作者：', f.author || '');
+
+  const newBook = {
+    id: Date.now(),
+    isbn: f.isbn || '',
+    title,
+    author: author || '未知作者',
+    publisher: '',
+    year: '',
+    pages: '',
+    cover: '',
+    categories: '',
+    description: '',
+    status: 'unread',
+    note: '',
+    addedAt: new Date().toISOString(),
+    hasEbook: true,
+    ebookName: f.name,
+    ebookType: f.type,
+  };
+
+  showLoading('加入書庫中...');
+  try {
+    const res = await apiPost({ action: 'add', book: newBook });
+    if (res.ok) {
+      books.unshift(newBook);
+      showToast(`✦ 已加入：${title}`);
+      renderEbookList();
+    } else {
+      showToast('⚠ ' + (res.error || '加入失敗'));
+    }
+  } catch(e) {
+    showToast('⚠ 網路錯誤，請重試');
+  }
+  hideLoading();
 }
 
 function removeEbook(i) {
