@@ -487,6 +487,24 @@
     <div class="has-ebook-banner" id="has-ebook-banner"></div>
 
     <div id="add-form" style="display:none">
+      <!-- 手動填寫區（查不到書時顯示） -->
+      <div id="manual-fields" style="display:none">
+        <div style="font-size:0.78rem;color:var(--muted);margin-bottom:10px;padding:8px;background:var(--aged);border-radius:6px">
+          查無資料，請手動填寫基本資訊
+        </div>
+        <div class="field-group">
+          <label class="field-label">書名 *</label>
+          <input class="field-input" id="field-title" placeholder="請輸入書名">
+        </div>
+        <div class="field-group">
+          <label class="field-label">作者</label>
+          <input class="field-input" id="field-author" placeholder="請輸入作者">
+        </div>
+        <div class="field-group">
+          <label class="field-label">出版社</label>
+          <input class="field-input" id="field-publisher" placeholder="選填">
+        </div>
+      </div>
       <div class="field-group">
         <label class="field-label">閱讀狀態</label>
         <select class="field-input" id="field-status">
@@ -790,7 +808,17 @@ async function lookupISBN(isbn) {
     }
   } catch(e) {}
 
-  setStatus('error', `❌ 查無此 ISBN：${isbn}`);
+  // 查無資料 → 顯示手動填寫表單
+  setStatus('warn', `查無 ISBN ${isbn} 的書籍資料，請手動填寫`);
+  currentBook = { isbn, title: '', author: '', publisher: '', year: '', pages: '', cover: '', categories: '', description: '' };
+  document.getElementById('preview-title').textContent = '（查無資料）';
+  document.getElementById('preview-author').textContent = '';
+  document.getElementById('preview-isbn').textContent = 'ISBN: ' + isbn;
+  document.getElementById('preview-cover').innerHTML = '📖';
+  document.getElementById('book-preview').classList.add('show');
+  document.getElementById('add-form').style.display = 'block';
+  document.getElementById('manual-fields').style.display = 'block';
+  document.getElementById('field-title').focus();
 }
 
 function lookupManual() {
@@ -826,6 +854,15 @@ function showPreview(book) {
 
 // ── Save ──────────────────────────────────────────────────
 async function saveBook() {
+  // 如果是手動填寫模式，先更新 currentBook
+  const manualFields = document.getElementById('manual-fields');
+  if (manualFields && manualFields.style.display !== 'none') {
+    const title = document.getElementById('field-title')?.value.trim();
+    if (!title) { setStatus('error', '請填寫書名'); return; }
+    currentBook.title = title;
+    currentBook.author = document.getElementById('field-author')?.value.trim() || '未知作者';
+    currentBook.publisher = document.getElementById('field-publisher')?.value.trim() || '';
+  }
   if (!currentBook) return;
   if (books.find(b => String(b.isbn) === String(currentBook.isbn))) {
     showToast('此書已在書庫中！'); return;
@@ -867,6 +904,10 @@ function resetScanForm() {
   currentBook = null;
   document.getElementById('book-preview').classList.remove('show');
   document.getElementById('add-form').style.display = 'none';
+  document.getElementById('manual-fields').style.display = 'none';
+  document.getElementById('field-title') && (document.getElementById('field-title').value = '');
+  document.getElementById('field-author') && (document.getElementById('field-author').value = '');
+  document.getElementById('field-publisher') && (document.getElementById('field-publisher').value = '');
   document.getElementById('isbn-manual').value = '';
   document.getElementById('field-note').value = '';
   document.getElementById('status-box').className = 'status-box';
@@ -1421,6 +1462,7 @@ function removeEbook(i) {
 
 // ── Helpers ───────────────────────────────────────────────
 function setStatus(type, msg) {
+  if (type === 'warn') type = 'error'; // 用同樣樣式但不同語意
   const el = document.getElementById('status-box');
   el.className = 'status-box ' + type;
   el.textContent = msg;
